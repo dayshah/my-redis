@@ -1,10 +1,15 @@
 // Message enum for return types
+#[derive(Clone)]
 pub enum Message {
     Simple(String),
     SimpleStatic(&'static str),
     Bulk(String),
-    Array(Vec<Option<String>>),
-    NullBulk(),
+    BulkStatic(&'static str),
+    Err(&'static str),
+    Array(Vec<Message>),
+    Integer(i64),
+    NullBulk,
+    NullArray,
 }
 
 pub fn convert_message(message: Message) -> String {
@@ -12,58 +17,64 @@ pub fn convert_message(message: Message) -> String {
         Message::Simple(message) => format!("+{}\r\n", message),
         Message::SimpleStatic(message) => format!("+{}\r\n", message),
         Message::Bulk(message) => format!("${}\r\n{}\r\n", message.len(), message),
+        Message::BulkStatic(message) => format!("${}\r\n{}\r\n", message.len(), message),
+        Message::Err(message) => format!("-ERR {}\r\n", message),
         Message::Array(message) => {
             let mut result = format!("*{}\r\n", message.len());
-            for word in message {
-                result.push_str(&convert_message(Message::Bulk(word.unwrap())));
+            for inner_message in message {
+                result.push_str(&convert_message(inner_message));
             }
             result
         }
-        Message::NullBulk() => "$-1\r\n".to_string(),
+        Message::Integer(int) => format!(":{}\r\n", int),
+        Message::NullBulk => "$-1\r\n".to_string(),
+        Message::NullArray => "*-1\r\n".to_string(),
     }
 }
 
 // Option<String> so we can take from it
-pub fn parse_message(buffer: &[u8]) -> Option<(Vec<Option<String>>, usize)> {
-    return match *buffer.get(0)? as char {
+pub fn parse_message(buffer: &[u8]) -> (Vec<Option<String>>, usize) {
+    return match buffer[0] as char {
         '+' => parse_simple_string(buffer),
         '$' => parse_bulk_string(buffer),
         '*' => parse_array(buffer),
-        _ => None,
+        _ => panic!("Unexepcted first character: {}", buffer[0] as char),
     };
 }
 
-fn parse_simple_string(buffer: &[u8]) -> Option<(Vec<Option<String>>, usize)> {
-    let (line, next_start) = up_to_break(&buffer[1..], 1)?;
-    return Some((vec![Some(line)], next_start + 1));
+fn parse_simple_string(buffer: &[u8]) -> (Vec<Option<String>>, usize) {
+    let next_start = get_crlf_end_pos(buffer);
+    let word = String::from_utf8(buffer[1..next_start - 2].to_vec()).unwrap();
+    return (vec![Some(word)], next_start);
 }
 
-fn parse_bulk_string(buffer: &[u8]) -> Option<(Vec<Option<String>>, usize)> {
-    let (_, word_start) = up_to_break(&buffer[1..], 1)?;
-    let (word, next_start) = up_to_break(&buffer[word_start..], word_start)?;
-    return Some((vec![Some(word)], next_start));
+fn parse_bulk_string(buffer: &[u8]) -> (Vec<Option<String>>, usize) {
+    let start_of_word = get_crlf_end_pos(buffer);
+    let next_start = get_crlf_end_pos(&buffer[start_of_word..]) + start_of_word;
+    let word = String::from_utf8(buffer[start_of_word..next_start - 2].to_vec()).unwrap();
+    return (vec![Some(word)], next_start);
 }
 
-fn parse_array(buffer: &[u8]) -> Option<(Vec<Option<String>>, usize)> {
-    let (line, mut start) = up_to_break(&buffer[1..], 1)?;
-    let array_len: usize = line.parse().ok()?;
+fn parse_array(buffer: &[u8]) -> (Vec<Option<String>>, usize) {
+    let mut next_start = get_crlf_end_pos(buffer);
+    let array_len = String::from_utf8(buffer[1..next_start - 2].to_vec())
+        .unwrap()
+        .parse()
+        .unwrap();
     let mut array = Vec::with_capacity(array_len);
+
     for _ in 0..array_len {
-        let (mut message, next_start) = parse_message(&buffer[start..])?;
+        let (mut message, message_end) = parse_message(&buffer[next_start..]);
         array.append(&mut message);
-        start += next_start;
+        next_start += message_end;
     }
-    return Some((array, start));
+    return (array, next_start);
 }
 
-fn up_to_break(buffer: &[u8], real_start: usize) -> Option<(String, usize)> {
-    for i in 1..buffer.len() {
-        if buffer.get(i - 1)? == &b'\r' && buffer.get(i)? == &b'\n' {
-            return Some((
-                String::from_utf8(buffer[0..i - 1].to_vec()).ok()?,
-                real_start + i + 1,
-            ));
-        }
-    }
-    return None;
+fn get_crlf_end_pos(buffer: &[u8]) -> usize {
+    return buffer
+        .windows(2)
+        .position(|w| w == b"\r\n")
+        .expect("Invalid message format: missing CRLF")
+        + 2;
 }

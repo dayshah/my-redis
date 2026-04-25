@@ -19,7 +19,7 @@ pub fn parse_args() -> Options {
         replica_options: None,
     };
     // The first is process name
-    let mut i: usize = 1;
+    let mut i = 1;
     while i < args.len() {
         let option = mem::take(&mut args[i]);
         i += 1;
